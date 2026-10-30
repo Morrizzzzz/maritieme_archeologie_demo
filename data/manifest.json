@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-10-30T11:22:55+00:00",
+  "sources": {
+    "mass": {
+      "title": "MaSS",
+      "retrieved_at": "2026-10-30T11:21:10+00:00",
+      "count": 2724,
+      "url": "https://mass.cultureelerfgoed.nl/api/v1/list/nl/",
+      "file": "data/mass.json",
+      "coverage": "Alle records in de Nederlandstalige lijst-API, wereldwijd.",
+      "license": "CC BY-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/"
+    },
+    "archis": {
+      "title": "Archis openbare wateronderzoeken",
+      "retrieved_at": "2026-10-30T11:22:55+00:00",
+      "count": 576,
+      "number_matched": 576,
+      "url": "https://data.geo.cultureelerfgoed.nl/openbaar/wfs",
+      "type_name": "openbaar:archeologische_onderzoeksmeldingen_openbaar_wgs84",
+      "filter": "bodemtype = 'Waterbodem'",
+      "file": "data/archis-water.geojson",
+      "coverage": "Afgeronde, openbare onderzoeksmeldingen met bodemtype Waterbodem; geen volledige dossiers of Waterbodem-dataset.",
+      "license": "Geen expliciete licentie vermeld in de geraadpleegde GetCapabilities. Bronvoorwaarden blijven van toepassing."
+    },
+    "machu": {
+      "title": "MACHU (Rijkswaterstaatviewer)",
+      "included": false,
+      "url": "https://geoweb.rijkswaterstaat.nl/Moduleviewer/?app=3d6b415eeabd47d9b3da56ebd686f7cf",
+      "checked_at": "2026-10-30",
+      "status": "De onderzochte wrakken- en archiefdiensten retourneerden een ArcGIS-fout met code 403; geen objectgegevens gedownload."
+    },
+    "erfgoedatlas": {
+      "title": "Erfgoedatlas",
+      "mode": "live WMS + GetFeatureInfo",
+      "url": "https://rce.webgis.nl/nl/map/erfgoedatlas",
+      "layers": [
+        "Archeologische_Monumentenkaart_2014",
+        "rijksmonumentcontouren (archeologische stijl)",
+        "noordzee_arch_onderzoekspotentieel_2016"
+      ]
+    }
+  }
+}
