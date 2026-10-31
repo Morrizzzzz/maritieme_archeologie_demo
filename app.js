@@ -1,4 +1,5 @@
 import {SOURCES,WMS_LAYERS,BASEMAPS} from './config.js';
+import {TripleClick} from './voyage.mjs';
 import {TYPE_LABELS,formatYear,normalizeMass,normalizeArchis,normalizeOwn,filterRecords,recordsCSV,recordsGeoJSON} from './core.mjs';
 
 const $=id=>document.getElementById(id);
@@ -11,6 +12,8 @@ const state={q:'',type:'',period:'all',sources:{mass:true,archis:true,own:true},
 let records=[],massRows=[],archisCollection=null,manifest=null,map,clusters,highlight,baseLayer,selected=null,resultLimit=50,toastTimer,noticeTimer,viewTimer;
 let snapshotDates={},sourceErrors={},loadReady=false,inspectionSequence=0;
 const activeWms=new Map();
+let view3D=null,mapMode='2d',modeBusy=false,pirateActive=false,piratePaused=false,pirateBusy=false,last3DCamera=null,pirate2D=null,pirateRenderer=null;
+const pirateClicks=new TripleClick();
 const hash=new URLSearchParams(location.hash.slice(1));
 state.q=(hash.get('q')||'').slice(0,300);state.type=Object.hasOwn(TYPE_LABELS,hash.get('type'))?hash.get('type'):'';
 state.period=['all','ancient','medieval','early','modern','unknown'].includes(hash.get('period'))?hash.get('period'):'all';
@@ -21,9 +24,66 @@ function notice(message,duration=7000){clearTimeout(noticeTimer);$('map-notice')
 function plainText(value){if(typeof value==='object')return JSON.stringify(value);return String(value??'').replace(/<[^>]*>/g,' ').replaceAll('&nbsp;',' ').replaceAll('&amp;','&').replaceAll('&lt;','<').replaceAll('&gt;','>').trim();}
 function openDialog(id){if(id==='export-dialog')$('export-summary').textContent=`${fmt(visibleRecords().length)} bronrecords in de huidige selectie.`;$(id).showModal();}
 async function jsonFetch(url,timeout=25000){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);try{const response=await fetch(url,{signal:controller.signal,credentials:'omit'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const d=await response.json();if(d?.error)throw new Error(typeof d.error==='string'?d.error:d.error.message||'Bronfout');return d;}finally{clearTimeout(timer);}}
-function bounds(){const b=map.getBounds();return [b.getWest(),b.getSouth(),b.getEast(),b.getNorth()];}
+function currentMap(){return mapMode==='3d'?view3D.map:map;}
+function currentZoom(){return mapMode==='3d'?view3D.map.getZoom()+1:map.getZoom();}
+function fitArea(bbox,detail=false){if(mapMode==='3d')view3D.fitBounds(bbox,detail);else map.fitBounds([[bbox[1],bbox[0]],[bbox[3],bbox[2]]],{maxZoom:detail?13:undefined,paddingTopLeft:detail?[30,70]:[30,30],paddingBottomRight:detail&&innerWidth>760?[370,70]:[30,30],animate:!matchMedia('(prefers-reduced-motion: reduce)').matches});}
+function bounds(){const b=currentMap().getBounds();return [b.getWest(),b.getSouth(),b.getEast(),b.getNorth()];}
 function visibleRecords(){return filterRecords(records,state,bounds());}
 function sourceMode(key){if(sourceErrors[key])return 'niet beschikbaar';return snapshotDates[key]?.live?`live opgehaald op ${date(snapshotDates[key].at)}`:`momentopname ${date(snapshotDates[key]?.at||manifest?.retrieved_at)}`;}
+
+function viewMoved(){if(loadReady)renderResults();updateRegionButtons();clearTimeout(viewTimer);viewTimer=setTimeout(saveView,200);}
+async function setMapMode(mode){
+  if(modeBusy)return false;
+  if(mode===mapMode)return true;
+  modeBusy=true;$('mode-2d').disabled=true;$('mode-3d').disabled=true;$('pirate-trigger').disabled=true;
+  try{
+    if(mode==='3d'){
+      $('mode-3d').textContent='Laden…';$('map-3d').hidden=false;
+      const c=map.getCenter(),pitch=Number(hash.get('pitch')),bearing=Number(hash.get('bearing'));
+      const camera={center:[c.lng,c.lat],zoom:map.getZoom()-1,pitch:last3DCamera?.pitch??(hash.has('pitch')&&Number.isFinite(pitch)?Math.max(0,Math.min(70,pitch)):55),bearing:last3DCamera?.bearing??(Number.isFinite(bearing)&&hash.has('bearing')?bearing:-18)};
+      if(!view3D){
+        const {createAtlas3D}=await import('./map3d.js');
+        view3D=await createAtlas3D({container:'map-3d',camera,basemap:state.basemap,
+          onMove:()=>{if(mapMode==='3d')viewMoved();},onRecord:r=>showRecord(r,false),onInspect:inspectContext,onError:notice,
+          onWmsStatus:(id,status)=>{if(mapMode==='3d')$(`wms-status-${id}`).textContent=status;}});
+      }else view3D.setCamera(camera);
+      mapMode='3d';view3D.setVisible(true);view3D.setRecords(filterRecords(records,{...state,inView:false}));
+      view3D.setSelection(selected?.geometry?{type:'Feature',geometry:selected.geometry,properties:{}}:null);
+      for(const {config} of activeWms.values())view3D.setWms(config,true);
+      $('map').hidden=true;
+    }else{
+      last3DCamera=view3D.getCamera();view3D.setVisible(false);mapMode='2d';
+      $('map').hidden=false;$('map-3d').hidden=true;map.invalidateSize({animate:false});
+      map.setView([last3DCamera.center[1],last3DCamera.center[0]],last3DCamera.zoom+1,{animate:false});
+    }
+    $('mode-2d').setAttribute('aria-pressed',String(mode==='2d'));$('mode-3d').setAttribute('aria-pressed',String(mode==='3d'));
+    $('workspace').classList.toggle('view-3d',mode==='3d');$('map-3d-tools').hidden=mode!=='3d';$('pirate-panel').hidden=!pirateActive||mode!==pirateRenderer;pirate2D?.setVisible(mode==='2d');
+    viewMoved();return true;
+  }catch(error){
+    $('map-3d').hidden=true;$('map').hidden=false;mapMode='2d';view3D?.setVisible(false);map.invalidateSize();
+    if(!view3D)$('map-3d').replaceChildren();console.warn('3D-kaart niet gestart:',error);
+    notice('De 3D-kaart kan in deze browser niet starten. De 2D-kaart blijft beschikbaar.',8000);return false;
+  }finally{modeBusy=false;$('pirate-trigger').disabled=pirateBusy;$('mode-2d').disabled=false;$('mode-3d').disabled=false;$('mode-3d').innerHTML='3D <span aria-hidden="true">◇</span>';}
+}
+function focusPirate(){if(pirateRenderer==='3d')view3D?.focusPirate();else pirate2D?.focus();}
+function updatePiratePanel(){
+  $('pirate-pause').textContent=piratePaused?'Verder varen':'Pauzeren';
+  $('pirate-status').textContent=piratePaused?'Even voor anker. Klaar voor de volgende reis?':'Een rondje Noordzee, met de wind in de zeilen.';
+}
+async function launchPirate(){
+  if(pirateBusy)return;pirateBusy=true;$('pirate-trigger').disabled=true;
+  try{
+    const use3D=await setMapMode('3d');
+    closeDetail();$('workspace').classList.remove('panel-open');$('mobile-panel-toggle').textContent='Zoeken & kaartlagen';$('mobile-panel-toggle').setAttribute('aria-expanded','false');
+    let result;
+    if(use3D){result=await view3D.startPirate();pirateRenderer='3d';}
+    else{if(!pirate2D){const {createPirateFallback}=await import('./pirate-fallback.js');pirate2D=createPirateFallback(map);}pirate2D.setVisible(true);result={paused:pirate2D.clock.paused};pirateRenderer='2d';}
+    pirateActive=true;piratePaused=result.paused;
+    updatePiratePanel();$('pirate-panel').hidden=false;$('pirate-trigger').classList.add('unlocked');
+    focusPirate();toast('Ahoy! Je hebt de Erfgoedpiraat ontdekt.');
+  }catch(error){notice(`Het piratenschip kon niet laden: ${error.message}`);}
+  finally{pirateBusy=false;$('pirate-trigger').disabled=false;}
+}
 
 function initMap(){
   const lat=Number(hash.get('lat')),lon=Number(hash.get('lon')),z=Number(hash.get('z'));
@@ -34,15 +94,15 @@ function initMap(){
   setBasemap(state.basemap);
   clusters=L.markerClusterGroup({maxClusterRadius:43,disableClusteringAtZoom:15,showCoverageOnHover:false,spiderfyOnMaxZoom:true,animate:!matchMedia('(prefers-reduced-motion: reduce)').matches,iconCreateFunction:cluster=>{const children=cluster.getAllChildMarkers(),sources=new Set(children.map(m=>m._atlasRecord.source)),kind=sources.size===1?[...sources][0]:'mixed',n=cluster.getChildCount(),size=n>99?48:n>9?42:36;return L.divIcon({html:fmt(n),className:`cluster-icon ${kind}`,iconSize:L.point(size,size)});}}).addTo(map);
   highlight=L.geoJSON(null,{style:{color:'#c67900',weight:3,fillColor:'#ffb612',fillOpacity:.15},pointToLayer:(f,ll)=>L.circleMarker(ll,{radius:12,color:'#c67900',weight:3,fillColor:'#ffb612',fillOpacity:.25}),interactive:false}).addTo(map);
-  map.on('moveend',()=>{if(loadReady)renderResults();updateRegionButtons();clearTimeout(viewTimer);viewTimer=setTimeout(saveView,200);});
+  map.on('moveend',()=>{if(mapMode==='2d')viewMoved();});
   map.on('click',inspectContext);updateRegionButtons();
 }
 function setBasemap(key){
-  if(baseLayer)map.removeLayer(baseLayer);state.basemap=key;$('basemap').value=key;
+  if(baseLayer)map.removeLayer(baseLayer);state.basemap=key;view3D?.setBase(key);$('basemap').value=key;
   const cfg=BASEMAPS[key];baseLayer=L.tileLayer(cfg.url,{maxZoom:cfg.maxZoom,attribution:cfg.attribution,keepBuffer:2,bounds:cfg.netherlands?[[50.5,2.7],[54,7.7]]:undefined});
-  let warned=false;baseLayer.on('tileerror',()=>{if(!warned){warned=true;notice('Achtergrondkaart niet bereikbaar. Kies eventueel een andere achtergrond.');}});baseLayer.addTo(map);baseLayer.bringToBack();
+  let warned=false;baseLayer.on('tileerror',()=>{if(!warned&&mapMode==='2d'){warned=true;notice('Achtergrondkaart niet bereikbaar. Kies eventueel een andere achtergrond.');}});baseLayer.addTo(map);baseLayer.bringToBack();
 }
-function updateRegionButtons(){const b=map.getBounds(),nl=map.getZoom()>=6&&b.contains([52.2,5.3]);$('region-nl').classList.toggle('selected',nl);$('region-world').classList.toggle('selected',map.getZoom()<6);}
+function updateRegionButtons(){const b=bounds(),nl=currentZoom()>=6&&b[0]<=5.3&&b[2]>=5.3&&b[1]<=52.2&&b[3]>=52.2;$('region-nl').classList.toggle('selected',nl);$('region-world').classList.toggle('selected',currentZoom()<6);}
 function buildWmsControls(){
   $('wms-layers').innerHTML=WMS_LAYERS.map(c=>`<div class="wms-row"><label class="layer-row"><input type="checkbox" id="wms-${c.id}"><span class="layer-symbol" style="background:${c.color}33;border-color:${c.color}"></span><span class="layer-copy"><strong>${esc(c.title)}</strong><small>${esc(c.subtitle)}</small></span></label><div class="wms-meta"><span id="wms-status-${c.id}">Uitgeschakeld</span><button id="legend-button-${c.id}" aria-expanded="false" aria-controls="legend-${c.id}">Legenda</button></div><div class="wms-legend" id="legend-${c.id}" hidden></div></div>`).join('');
   for(const c of WMS_LAYERS){
@@ -52,16 +112,17 @@ function buildWmsControls(){
   }
 }
 function toggleWms(c,enabled){
+  view3D?.setWms(c,enabled);
   if(!enabled){const prev=activeWms.get(c.id);if(prev)map.removeLayer(prev.layer);activeWms.delete(c.id);$(`wms-status-${c.id}`).textContent='Uitgeschakeld';saveView();return;}
   const layer=L.tileLayer.wms(c.url,{layers:c.layer,styles:c.style,format:'image/png',transparent:true,version:'1.1.1',opacity:.7,attribution:'Context: RCE / Erfgoedatlas',maxZoom:19});
-  let errors=0;layer.on('loading',()=>{errors=0;$(`wms-status-${c.id}`).textContent='Kaartbeeld laden…';});layer.on('tileerror',()=>{errors++;$(`wms-status-${c.id}`).textContent='Bron niet bereikbaar';});layer.on('load',()=>{$(`wms-status-${c.id}`).textContent=errors?'Deels / niet geladen':'Kaartbeeld geladen';});
+  let errors=0;layer.on('loading',()=>{errors=0;if(mapMode==='2d')$(`wms-status-${c.id}`).textContent='Kaartbeeld laden…';});layer.on('tileerror',()=>{errors++;if(mapMode==='2d')$(`wms-status-${c.id}`).textContent='Bron niet bereikbaar';});layer.on('load',()=>{if(mapMode==='2d')$(`wms-status-${c.id}`).textContent=errors?'Deels / niet geladen':'Kaartbeeld geladen';});
   activeWms.set(c.id,{config:c,layer});layer.addTo(map);layer.bringToBack();if(baseLayer)baseLayer.bringToBack();saveView();
 }
 function rebuildMarkers(){
   clusters.clearLayers();
   const filtered=filterRecords(records,{...state,inView:false});
   const markers=filtered.filter(r=>r.point&&Math.abs(r.point[1])<85).map(r=>{const marker=L.marker([r.point[1],r.point[0]],{title:`${r.name} · ${sourceNames[r.source]}`,alt:r.name,icon:L.divIcon({className:'point-wrapper',html:`<div class="point-marker ${r.source}" style="width:100%;height:100%"></div>`,iconSize:[13,13],iconAnchor:[6,6]})});marker._atlasRecord=r;const tip=document.createElement('span');tip.textContent=r.name;marker.bindTooltip(tip,{direction:'top',offset:[0,-7]});marker.on('click',()=>showRecord(r,false));return marker;});
-  clusters.addLayers(markers);renderResults();saveView();
+  clusters.addLayers(markers);view3D?.setRecords(filtered);renderResults();saveView();
 }
 function renderResults(){
   const list=visibleRecords();$('result-tab-count').textContent=fmt(list.length);$('result-heading').textContent=`${fmt(list.length)} bronrecords`;
@@ -76,7 +137,7 @@ function renderResults(){
 function switchTab(which){for(const tab of ['layers','results']){$(`${tab}-panel`).hidden=tab!==which;$(`${tab}-tab`).setAttribute('aria-selected',String(tab===which));}$('layers-tab').tabIndex=which==='layers'?0:-1;$('results-tab').tabIndex=which==='results'?0:-1;}
 function factsHTML(rows){return '<dl>'+rows.filter(([,v])=>v!==null&&v!==undefined&&v!=='').map(([key,value])=>`<div><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join('')+'</dl>';}
 function yearSpan(first,last){if(first===null)return 'Onbekend';return first===last?formatYear(first):`${formatYear(first)} – ${formatYear(last)}`;}
-function closeDetail(){inspectionSequence++;selected=null;$('detail').hidden=true;highlight.clearLayers();}
+function closeDetail(){inspectionSequence++;selected=null;$('detail').hidden=true;highlight.clearLayers();view3D?.setSelection(null);}
 function showRecord(r,zoom){
   inspectionSequence++;selected=r;$('detail-source').textContent=sourceNames[r.source];$('detail').hidden=false;
   const p=r.properties,rows=[['Bron-ID',r.sourceId],['Soort',r.subtype]];
@@ -88,25 +149,28 @@ function showRecord(r,zoom){
   const sourceLink=r.url?`<a class="source-link" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${r.source==='mass'?'Lees het verhaal op MaSS':'Open Archis · aanmelding nodig'} ↗</a>`:'';
   const sourceNote=r.source==='archis'?`Dit is een openbaar onderzoeksgebied. Zoek in Archis op meldingsnummer ${r.sourceId} voor het volledige dossier.`:r.source==='mass'?'De bron bevat meer verhaal, afbeeldingen en eventuele aanvullingen. Bron: MaSS / RCE · CC BY-SA 4.0.':'Gegevens uit je lokale bestand; niet opgeslagen of gedeeld.';
   $('detail-body').innerHTML=`<div class="eyebrow">${esc(r.source==='archis'?'ARCHEOLOGISCH ONDERZOEK':r.source==='own'?'EIGEN GEGEVENS':'MARITIEM ERFGOED')}</div><h2 id="detail-title" tabindex="-1">${esc(r.name)}</h2><p class="place">${esc(r.location||'Geen plaatsnaam vermeld')}</p>${factsHTML(rows)}${sourceLink}<p class="note">${esc(r.coordinateMeaning)}. ${esc(sourceNote)}</p><p class="field-help">${r.source==='own'?'Lokaal bestand':esc(sourceMode(r.source))}</p>`;
-  highlight.clearLayers();if(r.geometry)highlight.addData({type:'Feature',geometry:r.geometry,properties:{}});highlight.bringToFront();
-  if(zoom&&r.bounds){const mobile=innerWidth<=760;map.fitBounds([[r.bounds[1],r.bounds[0]],[r.bounds[3],r.bounds[2]]],{maxZoom:13,paddingTopLeft:[30,70],paddingBottomRight:mobile?[30,30]:[370,70],animate:!matchMedia('(prefers-reduced-motion: reduce)').matches});}
+  highlight.clearLayers();if(r.geometry)highlight.addData({type:'Feature',geometry:r.geometry,properties:{}});highlight.bringToFront();view3D?.setSelection(r.geometry?{type:'Feature',geometry:r.geometry,properties:{}}:null);
+  if(zoom&&r.bounds)fitArea(r.bounds,true);
   $('workspace').classList.remove('panel-open');$('mobile-panel-toggle').textContent='Zoeken & kaartlagen';$('mobile-panel-toggle').setAttribute('aria-expanded','false');
   if(zoom)$('detail-title').focus({preventScroll:true});
 }
 async function inspectContext(event){
   if(!activeWms.size)return;const token=++inspectionSequence;notice('Contextlagen op deze plek bevragen…',0);
-  const size=map.getSize(),point=map.latLngToContainerPoint(event.latlng),b=map.getBounds(),sw=L.CRS.EPSG3857.project(b.getSouthWest()),ne=L.CRS.EPSG3857.project(b.getNorthEast());
+  // Query around the clicked geographic coordinate, also correct on a pitched map.
+  const center=L.CRS.EPSG3857.project(L.latLng(event.latlng.lat,event.latlng.lng)),resolution=40075016.686/(256*2**currentZoom()),half=50.5*resolution;
+  const size={x:101,y:101},point={x:50,y:50},sw={x:center.x-half,y:center.y-half},ne={x:center.x+half,y:center.y+half};
   const results=await Promise.allSettled([...activeWms.values()].map(async({config:c})=>{const u=new URL(c.url);u.search=new URLSearchParams({service:'WMS',version:'1.1.1',request:'GetFeatureInfo',layers:c.layer,query_layers:c.layer,styles:c.style,format:'image/png',info_format:'application/json',srs:'EPSG:3857',bbox:[sw.x,sw.y,ne.x,ne.y].join(','),width:Math.round(size.x),height:Math.round(size.y),x:Math.round(point.x),y:Math.round(point.y),feature_count:10});const data=await jsonFetch(u,15000);return (data.features||[]).map(f=>({feature:f,config:c}));}));
   if(token!==inspectionSequence)return;const features=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value),failures=results.filter(r=>r.status==='rejected').length;
   if(!features.length){notice(failures?'Objectinformatie kon niet van alle bronnen worden opgehaald. De kaartbeelden kunnen wel beschikbaar zijn.':'Geen contextobject op deze plek gevonden.');return;}
   $('map-notice').hidden=true;selected=null;$('detail').hidden=false;$('detail-source').textContent='Erfgoedatlas · live objectinformatie';
-  function draw(index){const {feature:f,config:c}=features[index],p=f.properties||{},title=p.toponiem||p.naam||p.rijksmonument_nummer||p.monumentnummer||c.title;highlight.clearLayers();if(f.geometry)highlight.addData(f);const rows=Object.entries(p).filter(([,v])=>v!==null&&v!=='').map(([k,v])=>[k.replaceAll('_',' '),plainText(v)]);
+  function draw(index){const {feature:f,config:c}=features[index],p=f.properties||{},title=p.toponiem||p.naam||p.rijksmonument_nummer||p.monumentnummer||c.title;highlight.clearLayers();if(f.geometry)highlight.addData(f);view3D?.setSelection(f.geometry?f:null);const rows=Object.entries(p).filter(([,v])=>v!==null&&v!=='').map(([k,v])=>[k.replaceAll('_',' '),plainText(v)]);
     $('detail-body').innerHTML=`${features.length>1?`<label for="context-feature" class="field-help">${features.length} objecten gevonden</label><select id="context-feature" class="feature-select">${features.map((v,i)=>`<option value="${i}" ${i===index?'selected':''}>${esc(v.config.title)} · ${i+1}</option>`).join('')}</select>`:''}<div class="eyebrow">${esc(c.title)}</div><h2 id="detail-title">${esc(plainText(title))}</h2>${factsHTML(rows)}<a class="source-link" href="${SOURCES.atlas.url}" target="_blank" rel="noopener noreferrer">Bekijk in de Erfgoedatlas ↗</a><p class="note">Live bevraagd op ${esc(date(new Date()))}. ${c.id==='amk'?'AMK 2014 is een historische inventarisatie, geen actueel beschermingsregister.':''} ${failures?'Niet alle actieve lagen konden worden bevraagd.':''}</p>`;
     $('context-feature')?.addEventListener('change',e=>draw(Number(e.target.value)));
   }draw(0);
 }
 function saveView(){
-  if(!map)return;const c=map.getCenter(),p=new URLSearchParams({lat:c.lat.toFixed(5),lon:c.lng.toFixed(5),z:String(map.getZoom())});
+  if(!map)return;const c=currentMap().getCenter(),p=new URLSearchParams({lat:c.lat.toFixed(5),lon:c.lng.toFixed(5),z:currentZoom().toFixed(2)});
+  if(mapMode==='3d'){p.set('mode','3d');p.set('pitch',view3D.map.getPitch().toFixed(1));p.set('bearing',view3D.map.getBearing().toFixed(1));}
   if(state.q)p.set('q',state.q);if(state.type)p.set('type',state.type);if(state.period!=='all')p.set('period',state.period);if(!state.sources.mass)p.set('mass','0');if(!state.sources.archis)p.set('archis','0');if(!state.inView)p.set('view','0');if(state.basemap!=='light')p.set('base',state.basemap);if(activeWms.size)p.set('layers',[...activeWms.keys()].join(','));history.replaceState(null,'',`${location.pathname}${location.search}#${p}`);
 }
 function renderSourceSummary(){
@@ -153,6 +217,13 @@ async function refreshData(){
 }
 function download(name,content,mime){const blob=new Blob([content],{type:mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;(document.querySelector('dialog[open]')||document.body).append(a);a.click();setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},3000);}
 function wireEvents(){
+  $('mode-2d').addEventListener('click',()=>setMapMode('2d'));$('mode-3d').addEventListener('click',()=>setMapMode('3d'));
+  $('tilt-map').addEventListener('click',()=>view3D?.map.easeTo({pitch:view3D.map.getPitch()>58?35:view3D.map.getPitch()+15,duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:400}));
+  $('north-map').addEventListener('click',()=>view3D?.map.easeTo({bearing:0,duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:400}));
+  $('pirate-trigger').addEventListener('click',()=>{if(pirateClicks.click(performance.now()))launchPirate();});
+  $('pirate-pause').addEventListener('click',()=>{piratePaused=!piratePaused;if(pirateRenderer==='3d')view3D?.pausePirate(piratePaused);else pirate2D?.setPaused(piratePaused);updatePiratePanel();});
+  $('pirate-focus').addEventListener('click',focusPirate);
+  $('pirate-close').addEventListener('click',()=>{view3D?.stopPirate();pirate2D?.destroy();pirate2D=null;pirateActive=false;$('pirate-panel').hidden=true;$('pirate-trigger').classList.remove('unlocked');toast('De Erfgoedpiraat ligt weer voor anker.');});
   $('search').value=state.q;$('heritage-type').value=state.type;$('period').value=state.period;$('in-view').checked=state.inView;for(const key of ['mass','archis','own'])$(`source-${key}`).checked=state.sources[key];$('clear-search').hidden=!state.q;
   $('search').addEventListener('input',e=>{state.q=e.target.value;resultLimit=50;$('clear-search').hidden=!state.q;rebuildMarkers();if(state.q)switchTab('results');});$('clear-search').addEventListener('click',()=>{$('search').value='';state.q='';$('clear-search').hidden=true;rebuildMarkers();$('search').focus();});
   for(const [id,key] of [['heritage-type','type'],['period','period']])$(id).addEventListener('change',e=>{state[key]=e.target.value;resultLimit=50;rebuildMarkers();});
@@ -162,9 +233,9 @@ function wireEvents(){
   document.querySelector('.panel-tabs').addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();const next=$('layers-tab').getAttribute('aria-selected')==='true'?'results':'layers';switchTab(next);$(`${next}-tab`).focus();}});
   $('more-results').addEventListener('click',()=>{resultLimit+=50;renderResults();});
   $('reset').addEventListener('click',()=>{state.q='';state.type='';state.period='all';state.sources={mass:true,archis:true,own:true};state.inView=true;$('search').value='';$('heritage-type').value='';$('period').value='all';$('in-view').checked=true;$('clear-search').hidden=true;for(const k of ['mass','archis','own'])$(`source-${k}`).checked=true;for(const c of WMS_LAYERS){$(`wms-${c.id}`).checked=false;toggleWms(c,false);}closeDetail();resultLimit=50;rebuildMarkers();toast('Bronkeuze en filters hersteld.');});
-  $('region-nl').addEventListener('click',()=>{map.fitBounds([[50.7,2.4],[54.2,7.4]],{padding:[20,20]});closeDetail();if(state.basemap==='topo')setBasemap('light');});
-  $('region-world').addEventListener('click',()=>{setBasemap('topo');map.setView([20,10],2);closeDetail();});
-  $('basemap').addEventListener('change',e=>{setBasemap(e.target.value);if(e.target.value==='light'&&map.getZoom()<6)notice('De lichte PDOK-kaart dekt Nederland. Kies topografie voor wereldwijde dekking.');saveView();});
+  $('region-nl').addEventListener('click',()=>{fitArea([2.4,50.7,7.4,54.2]);closeDetail();if(state.basemap==='topo')setBasemap('light');});
+  $('region-world').addEventListener('click',()=>{setBasemap('topo');if(mapMode==='3d')view3D.map.easeTo({center:[10,20],zoom:1,pitch:35,duration:500});else map.setView([20,10],2);closeDetail();});
+  $('basemap').addEventListener('change',e=>{setBasemap(e.target.value);if(e.target.value==='light'&&currentZoom()<6)notice('De lichte PDOK-kaart dekt Nederland. Kies topografie voor wereldwijde dekking.');saveView();});
   $('detail-close').addEventListener('click',closeDetail);
   $('share').addEventListener('click',async()=>{saveView();try{await navigator.clipboard.writeText(location.href);toast('Kaartlink met positie en filters gekopieerd.');}catch{$('share-link').value=location.href;openDialog('share-dialog');$('share-link').select();}});
   document.querySelectorAll('[data-dialog]').forEach(b=>b.addEventListener('click',()=>openDialog(b.dataset.dialog)));
@@ -173,10 +244,10 @@ function wireEvents(){
   $('export-geojson').addEventListener('click',()=>{const list=visibleRecords();download('erfgoed-selectie.geojson',JSON.stringify(recordsGeoJSON(list,snapshotDates),null,2),'application/geo+json');toast(`${fmt(list.length)} records geëxporteerd als GeoJSON.`);});
   $('export-csv').addEventListener('click',()=>{const list=visibleRecords();download('erfgoed-selectie.csv',recordsCSV(list),'text/csv;charset=utf-8');toast(`${fmt(list.length)} records geëxporteerd als CSV.`);});
   $('import-button').addEventListener('click',()=>$('import-file').click());
-  $('import-file').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>20*1024*1024)throw new Error('Het bestand is groter dan 20 MB.');const own=normalizeOwn(JSON.parse(await file.text()));records=records.filter(r=>r.source!=='own').concat(own);state.sources.own=true;$('source-own').checked=true;$('import-layer').hidden=false;$('own-legend').hidden=false;$('own-count').textContent=`${fmt(own.length)} objecten · ${file.name}`;rebuildMarkers();const located=own.filter(r=>r.bounds);if(located.length){const bb=[Math.min(...located.map(r=>r.bounds[0])),Math.min(...located.map(r=>r.bounds[1])),Math.max(...located.map(r=>r.bounds[2])),Math.max(...located.map(r=>r.bounds[3]))];map.fitBounds([[bb[1],bb[0]],[bb[3],bb[2]]],{maxZoom:13,padding:[30,30]});}toast(`${fmt(own.length)} eigen objecten lokaal ingelezen.`);}catch(error){toast(`Import niet gelukt: ${error.message}`);}finally{e.target.value='';}});
+  $('import-file').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>20*1024*1024)throw new Error('Het bestand is groter dan 20 MB.');const own=normalizeOwn(JSON.parse(await file.text()));records=records.filter(r=>r.source!=='own').concat(own);state.sources.own=true;$('source-own').checked=true;$('import-layer').hidden=false;$('own-legend').hidden=false;$('own-count').textContent=`${fmt(own.length)} objecten · ${file.name}`;rebuildMarkers();const located=own.filter(r=>r.bounds);if(located.length){const bb=[Math.min(...located.map(r=>r.bounds[0])),Math.min(...located.map(r=>r.bounds[1])),Math.max(...located.map(r=>r.bounds[2])),Math.max(...located.map(r=>r.bounds[3]))];fitArea(bb,true);}toast(`${fmt(own.length)} eigen objecten lokaal ingelezen.`);}catch(error){toast(`Import niet gelukt: ${error.message}`);}finally{e.target.value='';}});
   $('remove-import').addEventListener('click',()=>{records=records.filter(r=>r.source!=='own');$('import-layer').hidden=true;$('own-legend').hidden=true;if(selected?.source==='own')closeDetail();rebuildMarkers();toast('Eigen gegevens uit dit venster verwijderd.');});
   $('mobile-panel-toggle').addEventListener('click',()=>{const open=$('workspace').classList.toggle('panel-open');$('mobile-panel-toggle').textContent=open?'Sluiten':'Zoeken & kaartlagen';$('mobile-panel-toggle').setAttribute('aria-expanded',String(open));});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]')){closeDetail();$('workspace').classList.remove('panel-open');$('mobile-panel-toggle').textContent='Zoeken & kaartlagen';$('mobile-panel-toggle').setAttribute('aria-expanded','false');}});
 }
 
-try{if(!window.L||!L.markerClusterGroup)throw new Error('De lokale kaartbibliotheek is niet geladen.');initMap();buildWmsControls();wireEvents();await loadData();}catch(error){$('data-status').textContent='De atlas kon niet starten.';notice(`Startfout: ${error.message}. Controleer of alle bestanden uit het pakket op de webserver staan.`,0);console.error(error);}
+try{if(!window.L||!L.markerClusterGroup)throw new Error('De lokale kaartbibliotheek is niet geladen.');initMap();buildWmsControls();wireEvents();await loadData();if(hash.get('mode')==='3d')await setMapMode('3d');}catch(error){$('data-status').textContent='De atlas kon niet starten.';notice(`Startfout: ${error.message}. Controleer of alle bestanden uit het pakket op de webserver staan.`,0);console.error(error);}

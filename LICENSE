@@ -25,3 +25,6 @@ MaSS: CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/
 Archis/RCE and map imagery: original source terms apply; see BRONNEN.md.
 Leaflet: vendor/LEAFLET-LICENSE.txt.
 Leaflet.markercluster: vendor/CLUSTER-LICENSE.txt.
+MapLibre GL JS 5.9.0: vendor/MAPLIBRE-LICENSE.txt (BSD-3-Clause).
+Three.js 0.180.0, including SVGRenderer and Projector: vendor/THREE-LICENSE.txt (MIT).
+The original procedural pirate ship is part of the application code.

@@ -1,1 +1,10 @@
-{"name":"maritiem-erfgoed-atlas","version":"1.0.0","private":true,"type":"module","description":"Openbare maritieme erfgoedgegevens op één kaart, geschikt voor GitHub Pages.","scripts":{"test":"node scripts/validate.mjs"}}
+{
+  "name": "maritiem-erfgoed-atlas",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Openbare maritieme erfgoedgegevens op één kaart, geschikt voor GitHub Pages.",
+  "scripts": {
+    "test": "node scripts/validate.mjs && node scripts/validate-3d.mjs"
+  }
+}

@@ -22,11 +22,17 @@ jobs:
         with:
           node-version: '22'
       - name: Controleer gegevens en code
-        run: node scripts/validate.mjs
+        run: |
+          node scripts/validate.mjs
+          node scripts/validate-3d.mjs
+          node --check app.js
+          node --check map3d.js
+          node --check pirate-ship.js
+          node --check pirate-fallback.js
       - name: Verzamel de openbare sitebestanden
         run: |
           mkdir _site
-          cp index.html style.css app.js core.mjs config.js README.md BRONNEN.md LICENSE .nojekyll _site/
+          cp index.html style.css app.js core.mjs config.js map3d.js voyage.mjs pirate-ship.js pirate-fallback.js README.md BRONNEN.md VERIFICATIE.md LICENSE .nojekyll _site/
           cp -R assets vendor data _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4

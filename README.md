@@ -48,10 +48,23 @@ De openbare onderzoeksmeldingen zijn **geen volledige kopie van Archis** en ook 
 - Klik op een groep om in te zoomen, of op een record voor kenmerken en een link naar de bron.
 - Onderzoeksgebieden krijgen een overzichtssymbool op het midden van hun begrenzing. Bij selectie verschijnt de originele geometrie. Dit is geen precieze wraklocatie.
 - Contextlagen zijn aan/uit te zetten, hebben een legenda en zijn via klikken op de kaart bevraagbaar. Ze vallen buiten de lijstfilters en downloads.
-- **Deel kaart** kopieert de positie, filters, achtergrond en contextlagen in een URL. Eigen ingelezen data wordt niet meegedeeld.
+- **Deel kaart** kopieert de positie, filters, achtergrond, contextlagen en 2D/3D-camera in een URL. Eigen ingelezen data wordt niet meegedeeld.
 - **Download selectie** exporteert CSV of GeoJSON. GeoJSON behoudt de oorspronkelijke geometrieën. CSV bevat overzichtscoördinaten met hun betekenis. Formuleachtige celwaarden worden als tekst beschermd.
 
 De tellingen zijn **bronrecords, geen unieke wrakken**. Records worden niet automatisch gekoppeld op grond van nabijheid of naam. NCN-nummers worden getoond als ze in de bron voorkomen.
+
+## Nieuw in versie 1.1: 3D en een verborgen schip
+
+- Kies **3D** naast de gebiedsknoppen om dezelfde erfgoedgegevens op een gekantelde, draaibare MapLibre-kaart te bekijken. **2D** keert terug naar de vertrouwde kaart. Zoekfilters, bronkeuze, achtergrond en geselecteerd object blijven behouden.
+- Draai met de rechtermuisknop of **Shift + pijltjestoetsen**. Gebruik **Kantelen** om de hoek te wijzigen en **N ↑** voor het noorden boven. Op touchscreens werkt draaien/kantelen met twee vingers.
+- De 3D-kaart toont geografisch perspectief. Er is **geen terrein- of bathymetriemodel** toegevoegd; de bronlocaties hebben geen verzonnen hoogtes of dieptes.
+- **Easter egg:** klik drie keer op het **ankericoon linksboven** (binnen 30 seconden tussen de klikken). De Erfgoedpiraat verschijnt en vaart een gesloten route op de Noordzee. De camera brengt het schip in beeld.
+- Het schip heeft een romp, masten, bolle zeilen, een wapperende piratenvlag en een kielzog. Het is een zelfgemaakt, schematisch 3D-model, geen historisch gereconstrueerd schip. Het schaalt als kaartsymbool en komt niet in de erfgoedgegevens, tellingen of exports terecht.
+- **Pauzeren / Verder varen**, **Schip in beeld** en **×** bedienen de animatie. Een verborgen browservenster pauzeert de vaart. Bij de systeemvoorkeur voor minder beweging begint het schip gepauzeerd.
+- Als WebGL niet beschikbaar is, blijft de atlas in 2D. Het easter egg werkt dan alsnog: hetzelfde 3D-schip wordt met SVG weergegeven en vaart over de 2D-kaart.
+- Een gedeelde kaartlink bewaart de 3D-camerahoek; het easter egg wordt niet automatisch voor ontvangers geactiveerd.
+
+De libraries zijn lokaal meegeleverd: MapLibre GL JS 5.9.0 en Three.js 0.180.0. Ze worden pas geladen wanneer nodig. Er is geen API-sleutel, betaalde kaartdienst of extra installatie nodig. Voor de WebGL-weergave moet de browser 3D-versnelling ondersteunen. Zie [VERIFICATIE.md](VERIFICATIE.md) voor de controles en de beperking van de testbrowser.
 
 ## Lokaal bekijken op Windows
 
@@ -94,18 +107,24 @@ Eigen bestanden blijven in het werkgeheugen van de browser en verdwijnen bij her
 | `index.html` | Nederlandstalige interface en toelichtingen |
 | `style.css` | Blauw/geel kleurgebruik, responsive lay-out |
 | `app.js` | Kaart, filters, objectinformatie, export en browserverversing |
+| `map3d.js` | 3D-kaart, geclusterde punten, WMS, objectselectie en camera |
+| `pirate-ship.js` | Oorspronkelijk 3D-model en WebGL-kaartlaag |
+| `pirate-fallback.js` | Hetzelfde schip als SVG op de 2D-kaart zonder WebGL |
+| `voyage.mjs` | Drievoudige klik, vaarroute en animatieklok |
 | `core.mjs` | Normalisatie, geometrie, datumfilters, importvalidatie en export |
 | `config.js` | Bron-URL’s, WMS-laagnamen, stijlen en achtergronden |
 | `data/manifest.json` | Ophaaldatums, aantallen, selectie en herkomst |
 | `scripts/update_data.py` | Reproduceerbaar bijwerken van openbare snapshots |
 | `scripts/validate.mjs` | Controle op data, geometrie en kernfunctionaliteit |
-| `vendor/` | Lokaal meegeleverde Leaflet en markercluster met licenties |
+| `scripts/validate-3d.mjs` | Klikgedrag, animatieklok, route, model en modulepaden |
+| `vendor/` | Leaflet, markercluster, MapLibre en Three.js met licenties |
 
 Er is geen bouwstap. Voor controles met Node.js 22 of nieuwer:
 
 ```sh
 node --check app.js
 node scripts/validate.mjs
+node scripts/validate-3d.mjs
 ```
 
 ## Afhankelijkheden en grenzen
